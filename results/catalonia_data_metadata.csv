@@ -1,0 +1,14 @@
+item,value
+download_date,2026-07-28
+n_rows_analysis,103014
+n_abs,377
+n_seasons,15
+first_week,2011-10-03
+last_week,2026-06-29
+total_cases,178516
+n_programme_seasons,3
+mean_programme_immunisation_intensity,0.980690796861689
+immunisation_intensity_scale,1.81818181818182
+immunisation_intensity_definition,(immunised/reference_population)/median_treated_ABS_season_ratio
+infant_age_pattern,(^0$|0 anys|menors? d.?1|0[ -]?11|< ?1)
+last_complete_season,2025-2026

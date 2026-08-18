@@ -1,0 +1,340 @@
+
+R version 4.2.2 Patched (2022-11-10 r83330) -- "Innocent and Trusting"
+Copyright (C) 2022 The R Foundation for Statistical Computing
+Platform: x86_64-pc-linux-gnu (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> # Catalonia analysis with beacon_affine_v2.stan.
+> #
+> # Differences from the v1 script:
+> #   * the Stan data list is built by build_beacon_stan_data(), which adds the
+> #     area-season index, the week pivot and the contiguous series blocks the
+> #     dynamic g-formula needs, and rebuilds the lagged covariate with the
+> #     centring and scaling constants Stan reuses inside the recursion;
+> #   * the primary prior on the intervention coefficient is neutral, with the
+> #     protective prior retained as a declared sensitivity analysis;
+> #   * both the controlled and the dynamic prevented fractions are reported;
+> #   * the weekly trajectory is read from the season-by-week aggregates computed
+> #     inside Stan, since v2 no longer returns per-observation mu vectors;
+> #   * overlap and prior-posterior contraction are reported alongside the
+> #     effect estimate, because a wide interval spanning the null means
+> #     something different when the identifying contrast is nearly degenerate.
+> 
+> helpers_path <- c("helpers.R", "R/helpers.R", "../R/helpers.R")
+> helpers_path <- helpers_path[file.exists(helpers_path)][1]
+> if (is.na(helpers_path)) stop("helpers.R not found.")
+> source(helpers_path)
+> 
+> suppressPackageStartupMessages({
++   library(data.table)
++   library(cmdstanr)
++   library(posterior)
++ })
+> 
+> dir.create("results", recursive = TRUE, showWarnings = FALSE)
+> 
+> input <- "data/derived/catalonia_beacon_analysis.csv"
+> if (!file.exists(input)) stop("Run R/02_download_prepare_catalonia.R first.")
+> d <- fread(input)
+> d[, week_date := as.Date(week_date)]
+> 
+> max_areas <- as.integer(Sys.getenv("BEACON_MAX_AREAS", "60"))
+> area_size <- d[, .(population = median(population, na.rm = TRUE), n = .N),
++                by = abs_code][order(-population)]
+> keep <- head(area_size$abs_code, max_areas)
+> d <- d[abs_code %in% keep & week_in_season >= 1 & week_in_season <= 52]
+> d <- d[
++   is.finite(y) & is.finite(population) & population > 0 &
++     is.finite(immunisation_intensity) & is.finite(treated) &
++     is.finite(week_in_season) & is.finite(ses_z)
++ ]
+> if (nrow(d) < 500) {
++   stop("Too few complete records after filtering. Inspect immunisation-",
++        "intensity and age-group preparation.")
++ }
+> 
+> d[, area_id := abs_code]
+> d[, season_id := season]
+> d[, ses := ses_z]
+> d[, immunisation_intensity := pmax(immunisation_intensity, 0)]
+> 
+> # ---------------------------------------------------------------------------
+> # Overlap first. If the identifying contrast is degenerate, the effect estimate
+> # is uninformative regardless of how well the sampler behaves.
+> # ---------------------------------------------------------------------------
+> overlap <- overlap_diagnostic(d, area_col = "abs_code", season_col = "season")
+> fwrite(overlap, "results/catalonia_overlap_diagnostic.csv")
+> message("Overlap in scaled immunisation intensity by programme season:")
+Overlap in scaled immunisation intensity by programme season:
+> print(overlap)
+   season_id n_abs median_intensity sd_intensity iqr_intensity       p10
+      <char> <int>            <num>        <num>         <num>     <num>
+1: 2023-2024    60        0.9157628   0.04883071    0.05376940 0.8652970
+2: 2024-2025    60        1.0204238   0.03491567    0.05247685 0.9735821
+3: 2025-2026    60        1.0272931   0.02996186    0.03735684 0.9868958
+         p90 prop_within_5pct
+       <num>            <num>
+1: 0.9625867        0.7500000
+2: 1.0544988        0.8666667
+3: 1.0557417        0.9333333
+> 
+> # ---------------------------------------------------------------------------
+> # Stan data and model
+> # ---------------------------------------------------------------------------
+> stan_H <- as.integer(Sys.getenv("BEACON_STAN_H", "4"))
+> stan_harmonic_decay <- as.numeric(Sys.getenv("BEACON_HARMONIC_DECAY", "1"))
+> prior_sd_beta <- as.numeric(Sys.getenv("BEACON_PRIOR_SD_BETA", "0.5"))
+> 
+> built <- build_beacon_stan_data(
++   d,
++   H = stan_H,
++   harmonic_decay = stan_harmonic_decay,
++   intensity_quadratic = as.integer(Sys.getenv("BEACON_INTENSITY_QUADRATIC", "0")),
++   # Primary analysis: neutral prior. Centring on log(0.6) would put the prior
++   # mean on the hypothesis under test.
++   prior_mean_beta_intensity = 0,
++   prior_sd_beta_intensity = prior_sd_beta,
++   prior_sd_ascertainment = 0,
++   compute_log_lik = 1L,
++   compute_y_rep = 1L,
++   dynamic_gformula = 1L
++ )
+> stan_data <- built$stan_data
+> # build_beacon_stan_data() reorders rows into contiguous series blocks; use its
+> # frame from here on so every downstream join matches the Stan row order.
+> d <- built$data
+> 
+> stan_file <- Sys.getenv("BEACON_STAN_FILE", "")
+> if (!nzchar(stan_file)) {
++   candidates <- c("Stan/beacon_affine_v2.stan", "../Stan/beacon_affine_v2.stan",
++                   "beacon_affine_v2.stan")
++   stan_file <- candidates[file.exists(candidates)][1]
++   if (is.na(stan_file)) stop("beacon_affine_v2.stan not found.")
++ }
+> stan_file <- normalizePath(stan_file, mustWork = TRUE)
+> assert_beacon_v2(stan_file)
+> 
+> message("Stan source: ", stan_file)
+Stan source: /home/dmorina/BEACON/Stan/beacon_affine_v2.stan
+> message("Stan source MD5: ", unname(tools::md5sum(stan_file)))
+Stan source MD5: 2f64f016888759b6a2b2c612f38d4c4c
+> message("Series blocks: ", stan_data$M, "; weeks per season: ", stan_data$W)
+Series blocks: 900; weeks per season: 52
+> message("Lag transform: (log1p(y) - ", round(stan_data$lag_center, 4), ") / ",
++         round(stan_data$lag_scale, 4))
+Lag transform: (log1p(y) - 1.0333) / 0.4143
+> 
+> force_recompile <- tolower(Sys.getenv("BEACON_FORCE_RECOMPILE", "true")) %in%
++   c("1", "true", "yes")
+> mod <- cmdstan_model(stan_file, force_recompile = force_recompile)
+> 
+> chains <- as.integer(Sys.getenv("BEACON_CHAINS", "4"))
+> parallel_chains <- min(
++   chains,
++   as.integer(Sys.getenv("BEACON_CORES", as.character(60)))
++ )
+> 
+> set.seed(17072026)
+> 
+> run_beacon <- function(stan_data, label, seed = 17072026) {
++   init_list <- make_beacon_inits_v2(stan_data, chains, seed + 991L)
++ 
++   init_list <- lapply(init_list, function(chain_inits) {
++     chain_inits$reciprocal_phi <- 0.5
++     return(chain_inits)
++   })
++   mod$sample(
++     data = stan_data,
++     seed = seed,
++     chains = chains,
++     parallel_chains = parallel_chains,
++     iter_warmup = as.integer(Sys.getenv("BEACON_WARMUP", "1000")),
++     iter_sampling = as.integer(Sys.getenv("BEACON_SAMPLING", "1000")),
++     init = init_list,
++     adapt_delta = as.numeric(Sys.getenv("BEACON_ADAPT_DELTA", "0.97")),
++     max_treedepth = as.integer(Sys.getenv("BEACON_MAX_TREEDEPTH", "13")),
++     refresh = 100
++   )
++ }
+> 
+> # ---------------------------------------------------------------------------
+> # Prior predictive check. Run before the posterior: if the prior implies weekly
+> # incidence orders of magnitude away from the observed range, fix that first.
+> # ---------------------------------------------------------------------------
+> if (tolower(Sys.getenv("BEACON_PRIOR_CHECK", "true")) %in% c("1", "true", "yes")) {
++   prior_data <- stan_data
++   prior_data$prior_only <- 1L
++   prior_data$compute_y_rep <- 1L
++   prior_data$compute_log_lik <- 0L
++   prior_data$dynamic_gformula <- 0L
++ 
++   message("Prior predictive check ...")
++   prior_fit <- try(
++     mod$sample(
++       data = prior_data,
++       seed = 17072026,
++       chains = 2,
++       iter_warmup = 500,
++       iter_sampling = 500,
++       init = make_beacon_inits_v2(prior_data, 2, 4242L),
++       refresh = 0
++     ),
++     silent = TRUE
++   )
++   if (inherits(prior_fit, "try-error")) {
++     warning("Prior predictive run failed; inspect before trusting the posterior.")
++   } else {
++     yrep <- as_draws_matrix(prior_fit$draws("y_rep"))
++     prior_totals <- rowSums(yrep)
++     observed_total <- sum(stan_data$y)
++     fwrite(
++       data.table(
++         quantity = c("observed_total", "prior_predictive_median",
++                      "prior_predictive_lower", "prior_predictive_upper"),
++         value = c(
++           observed_total,
++           median(prior_totals),
++           unname(quantile(prior_totals, 0.025)),
++           unname(quantile(prior_totals, 0.975))
++         )
++       ),
++       "results/catalonia_prior_predictive_check.csv"
++     )
++     if (observed_total < quantile(prior_totals, 0.025) ||
++         observed_total > quantile(prior_totals, 0.975)) {
++       warning(
++         "The observed total lies outside the central 95% of the prior ",
++         "predictive distribution. Revisit the prior on alpha and sigma_f ",
++         "before interpreting the posterior."
++       )
++     }
++     rm(prior_fit, yrep)
++   }
++ }
+Prior predictive check ...
+Running MCMC with 2 sequential chains...
+
+Chain 1 finished in 340.1 seconds.
+Chain 2 finished in 469.7 seconds.
+
+Both chains finished successfully.
+Mean chain execution time: 404.9 seconds.
+Total execution time: 810.6 seconds.
+
+> 
+> # ---------------------------------------------------------------------------
+> # Primary fit
+> # ---------------------------------------------------------------------------
+> fit <- run_beacon(stan_data, "primary")
+Running MCMC with 4 parallel chains...
+
+Chain 2 Informational Message: The current Metropolis proposal is about to be rejected because of the following issue:
+Chain 2 Exception: neg_binomial_2_log_lpmf: Precision parameter is inf, but must be positive finite! (in '/tmp/RtmpxrrsDH/model-34c76442fd6ce2.stan', line 228, column 4 to column 53)
+Chain 2 If this warning occurs sporadically, such as for highly constrained variable types like covariance matrices, then the sampler is fine,
+Chain 2 but if this warning occurs often then your model may be either severely ill-conditioned or misspecified.
+Chain 2 
+Chain 3 Informational Message: The current Metropolis proposal is about to be rejected because of the following issue:
+Chain 3 Exception: neg_binomial_2_log_lpmf: Precision parameter is inf, but must be positive finite! (in '/tmp/RtmpxrrsDH/model-34c76442fd6ce2.stan', line 228, column 4 to column 53)
+Chain 3 If this warning occurs sporadically, such as for highly constrained variable types like covariance matrices, then the sampler is fine,
+Chain 3 but if this warning occurs often then your model may be either severely ill-conditioned or misspecified.
+Chain 3 
+Chain 2 Informational Message: The current Metropolis proposal is about to be rejected because of the following issue:
+Chain 2 Exception: neg_binomial_2_log_lpmf: Precision parameter is inf, but must be positive finite! (in '/tmp/RtmpxrrsDH/model-34c76442fd6ce2.stan', line 228, column 4 to column 53)
+Chain 2 If this warning occurs sporadically, such as for highly constrained variable types like covariance matrices, then the sampler is fine,
+Chain 2 but if this warning occurs often then your model may be either severely ill-conditioned or misspecified.
+Chain 2 
+Chain 3 Informational Message: The current Metropolis proposal is about to be rejected because of the following issue:
+Chain 3 Exception: neg_binomial_2_log_lpmf: Precision parameter is inf, but must be positive finite! (in '/tmp/RtmpxrrsDH/model-34c76442fd6ce2.stan', line 228, column 4 to column 53)
+Chain 3 If this warning occurs sporadically, such as for highly constrained variable types like covariance matrices, then the sampler is fine,
+Chain 3 but if this warning occurs often then your model may be either severely ill-conditioned or misspecified.
+Chain 3 
+Chain 4 Informational Message: The current Metropolis proposal is about to be rejected because of the following issue:
+Chain 4 Exception: neg_binomial_2_log_lpmf: Precision parameter is inf, but must be positive finite! (in '/tmp/RtmpxrrsDH/model-34c76442fd6ce2.stan', line 228, column 4 to column 53)
+Chain 4 If this warning occurs sporadically, such as for highly constrained variable types like covariance matrices, then the sampler is fine,
+Chain 4 but if this warning occurs often then your model may be either severely ill-conditioned or misspecified.
+Chain 4 
+Chain 4 Informational Message: The current Metropolis proposal is about to be rejected because of the following issue:
+Chain 4 Exception: neg_binomial_2_log_lpmf: Precision parameter is inf, but must be positive finite! (in '/tmp/RtmpxrrsDH/model-34c76442fd6ce2.stan', line 228, column 4 to column 53)
+Chain 4 If this warning occurs sporadically, such as for highly constrained variable types like covariance matrices, then the sampler is fine,
+Chain 4 but if this warning occurs often then your model may be either severely ill-conditioned or misspecified.
+Chain 4 
+Chain 3 Iteration:    1 / 2000 [  0%]  (Warmup) 
+Chain 1 Iteration:    1 / 2000 [  0%]  (Warmup) 
+Chain 2 Iteration:    1 / 2000 [  0%]  (Warmup) 
+Chain 3 Informational Message: The current Metropolis proposal is about to be rejected because of the following issue:
+Chain 3 Exception: neg_binomial_2_log_lpmf: Log location parameter[1] is -nan, but must be finite! (in '/tmp/RtmpxrrsDH/model-34c76442fd6ce2.stan', line 228, column 4 to column 53)
+Chain 3 If this warning occurs sporadically, such as for highly constrained variable types like covariance matrices, then the sampler is fine,
+Chain 3 but if this warning occurs often then your model may be either severely ill-conditioned or misspecified.
+Chain 3 
+Chain 4 Iteration:    1 / 2000 [  0%]  (Warmup) 
+Chain 1 Informational Message: The current Metropolis proposal is about to be rejected because of the following issue:
+Chain 1 Exception: neg_binomial_2_log_lpmf: Log location parameter[1] is -nan, but must be finite! (in '/tmp/RtmpxrrsDH/model-34c76442fd6ce2.stan', line 228, column 4 to column 53)
+Chain 1 If this warning occurs sporadically, such as for highly constrained variable types like covariance matrices, then the sampler is fine,
+Chain 1 but if this warning occurs often then your model may be either severely ill-conditioned or misspecified.
+Chain 1 
+Chain 1 Informational Message: The current Metropolis proposal is about to be rejected because of the following issue:
+Chain 1 Exception: neg_binomial_2_log_lpmf: Precision parameter is inf, but must be positive finite! (in '/tmp/RtmpxrrsDH/model-34c76442fd6ce2.stan', line 228, column 4 to column 53)
+Chain 1 If this warning occurs sporadically, such as for highly constrained variable types like covariance matrices, then the sampler is fine,
+Chain 1 but if this warning occurs often then your model may be either severely ill-conditioned or misspecified.
+Chain 1 
+Chain 2 Informational Message: The current Metropolis proposal is about to be rejected because of the following issue:
+Chain 2 Exception: neg_binomial_2_log_lpmf: Precision parameter is inf, but must be positive finite! (in '/tmp/RtmpxrrsDH/model-34c76442fd6ce2.stan', line 228, column 4 to column 53)
+Chain 2 If this warning occurs sporadically, such as for highly constrained variable types like covariance matrices, then the sampler is fine,
+Chain 2 but if this warning occurs often then your model may be either severely ill-conditioned or misspecified.
+Chain 2 
+Chain 4 Informational Message: The current Metropolis proposal is about to be rejected because of the following issue:
+Chain 4 Exception: neg_binomial_2_log_lpmf: Log location parameter[1] is -nan, but must be finite! (in '/tmp/RtmpxrrsDH/model-34c76442fd6ce2.stan', line 228, column 4 to column 53)
+Chain 4 If this warning occurs sporadically, such as for highly constrained variable types like covariance matrices, then the sampler is fine,
+Chain 4 but if this warning occurs often then your model may be either severely ill-conditioned or misspecified.
+Chain 4 
+Chain 4 Informational Message: The current Metropolis proposal is about to be rejected because of the following issue:
+Chain 4 Exception: neg_binomial_2_log_lpmf: Precision parameter is inf, but must be positive finite! (in '/tmp/RtmpxrrsDH/model-34c76442fd6ce2.stan', line 228, column 4 to column 53)
+Chain 4 If this warning occurs sporadically, such as for highly constrained variable types like covariance matrices, then the sampler is fine,
+Chain 4 but if this warning occurs often then your model may be either severely ill-conditioned or misspecified.
+Chain 4 
+Chain 3 Iteration:  100 / 2000 [  5%]  (Warmup) 
+Chain 3 Iteration:  200 / 2000 [ 10%]  (Warmup) 
+Chain 1 Iteration:  100 / 2000 [  5%]  (Warmup) 
+Chain 4 Iteration:  100 / 2000 [  5%]  (Warmup) 
+Chain 3 Iteration:  300 / 2000 [ 15%]  (Warmup) 
+Chain 3 Iteration:  400 / 2000 [ 20%]  (Warmup) 
+Chain 2 Iteration:  100 / 2000 [  5%]  (Warmup) 
+Chain 1 Iteration:  200 / 2000 [ 10%]  (Warmup) 
+Chain 4 Iteration:  200 / 2000 [ 10%]  (Warmup) 
+Chain 3 Iteration:  500 / 2000 [ 25%]  (Warmup) 
+Chain 1 Iteration:  300 / 2000 [ 15%]  (Warmup) 
+Chain 3 Iteration:  600 / 2000 [ 30%]  (Warmup) 
+Chain 2 Iteration:  200 / 2000 [ 10%]  (Warmup) 
+Chain 4 Iteration:  300 / 2000 [ 15%]  (Warmup) 
+Chain 3 Iteration:  700 / 2000 [ 35%]  (Warmup) 
+Chain 1 Iteration:  400 / 2000 [ 20%]  (Warmup) 
+Chain 3 Iteration:  800 / 2000 [ 40%]  (Warmup) 
+Chain 2 Iteration:  300 / 2000 [ 15%]  (Warmup) 
+Chain 3 Iteration:  900 / 2000 [ 45%]  (Warmup) 
+Chain 4 Iteration:  400 / 2000 [ 20%]  (Warmup) 
+Chain 1 Iteration:  500 / 2000 [ 25%]  (Warmup) 
+Chain 3 Iteration: 1000 / 2000 [ 50%]  (Warmup) 
+Chain 3 Iteration: 1001 / 2000 [ 50%]  (Sampling) 
+Chain 2 Iteration:  400 / 2000 [ 20%]  (Warmup) 
+Chain 1 Iteration:  600 / 2000 [ 30%]  (Warmup) 
+Chain 4 Iteration:  500 / 2000 [ 25%]  (Warmup) 
+Chain 3 Iteration: 1100 / 2000 [ 55%]  (Sampling) 
+Chain 1 Iteration:  700 / 2000 [ 35%]  (Warmup) 
+Chain 4 Iteration:  600 / 2000 [ 30%]  (Warmup) 
+Chain 2 Iteration:  500 / 2000 [ 25%]  (Warmup) 
+Chain 3 Iteration: 1200 / 2000 [ 60%]  (Sampling) 
+Chain 1 Iteration:  800 / 2000 [ 40%]  (Warmup) 
+Chain 4 Iteration:  700 / 2000 [ 35%]  (Warmup) 
+Chain 3 Iteration: 1300 / 2000 [ 65%]  (Sampling) 
+Chain 2 Iteration:  600 / 2000 [ 30%]  (Warmup) 
