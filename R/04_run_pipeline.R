@@ -1,0 +1,6 @@
+source("01_simulation_study.R")
+source("02_download_prepare_catalonia.R")
+source("03_fit_catalonia.R")
+source("03b_placebo_catalonia.R")
+source("03c_effect_profile.R")
+source("05_tables_figures.R")
