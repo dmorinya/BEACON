@@ -1,0 +1,17 @@
+analysis,metric,mean,lower,median,upper,status
+primary,log_rate_ratio_cycle_average,0.0143310457281105,-0.25366173675,0.00917987555,0.2915818285,fitted_open_catalonia_data
+primary,rate_ratio_at_reference_activity,1.024023618975,0.775954234,1.00922215,1.33854315,fitted_open_catalonia_data
+primary,effect_modulation_amplitude,0.498001135789549,0.45001710369588,0.498069479570575,0.545123532548382,fitted_open_catalonia_data
+primary,prevented_cases,1048.65202153185,-978.97955825,1008.6673,3430.049595,fitted_open_catalonia_data
+primary,prevented_fraction,0.110781553224093,-0.15652116525,0.122970315,0.322253011,fitted_open_catalonia_data
+primary,prevented_cases_dynamic,1369.81212892241,-949.07741,1310.348,4222.66711,fitted_open_catalonia_data
+primary,prevented_fraction_dynamic,0.139291232198518,-0.1532538405,0.15279444,0.36779620175,fitted_open_catalonia_data
+primary,prevented_fraction_within_support_p90_vs_p10,0.00605677311883075,-0.0165484211114342,0.00628739719949578,0.028940068460118,fitted_open_catalonia_data
+primary,beta_lag,0.12152666281,0.10895184025,0.121538895,0.1336719095,fitted_open_catalonia_data
+primary,exp_beta_lag,1.12924237507312,1.11510864569508,1.12923328660563,1.14301774489535,fitted_open_catalonia_data
+primary,epidemic_shift_sd,1.4655256566525,0.9589156165,1.40841465,2.30801944,fitted_open_catalonia_data
+primary,epidemic_speed_sd,0.1832352722525,0.12484018975,0.17801398,0.27162220325,fitted_open_catalonia_data
+primary,season_sd,0.206215652975,0.13385470525,0.196386455,0.32764451075,fitted_open_catalonia_data
+primary,area_season_sd,0.228436955065,0.20898374475,0.22837472,0.2480006525,fitted_open_catalonia_data
+primary,dispersion,7.0672287245,6.39112698,7.0548414,7.836563065,fitted_open_catalonia_data
+primary,beta_prior_posterior_contraction,0.726523734285216,,,,fitted_open_catalonia_data

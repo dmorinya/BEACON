@@ -1,0 +1,3 @@
+parameter,prior,prior_sd
+sigma_shift,half-normal,3
+sigma_speed,half-normal,0.15

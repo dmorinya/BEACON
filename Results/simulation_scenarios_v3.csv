@@ -1,0 +1,7 @@
+scenario,scenario_label,shift_sd,speed_sd,ascertainment_change,confounding,modulation_amplitude,activity_ses_coef,activity_noise_sd,programme_delay
+aligned,1. Aligned,0,0,0,0,0,0.2,0.18,0
+phase_shift,2. Phase shift,2.5,0.08,0,0,0,0.2,0.18,0
+phase_and_ascertainment,3. Phase + ascertainment,2.5,0.08,-0.15,0,0,0.2,0.18,0
+phase_and_confounding,4. Phase + confounding,2.5,0.08,0,0.6,0,0.2,0.18,0
+phase_dependent_effect,5. Phase-dependent effect,2.5,0.08,0,0,0.25,0.2,0.18,0
+limited_overlap,6. Limited overlap,2.5,0.08,0,0,0,0.03,0.04,3
